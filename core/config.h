@@ -105,6 +105,7 @@ extern int core_config_check_int_status(bool high);
 extern void core_config_ic_suspend(void);
 extern void core_config_ic_resume(void);
 extern void core_config_ic_reset(void);
+extern void core_config_ic_early_suspend(void);
 
 /* control features of Touch IC */
 extern void core_config_sense_ctrl(bool start);
@@ -129,4 +130,8 @@ extern int core_config_get_fw_ver(void);
 extern int core_config_get_chip_id(void);
 
 extern int core_config_init(void);
+
+extern int ilitek_lcm_bias_power_init(void);
+extern int ilitek_lcm_bias_power_deinit(void);
+extern int ilitek_lcm_power_source_ctrl(int enable);
 #endif /* __CONFIG_H */

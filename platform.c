@@ -32,19 +32,13 @@
 #include "platform.h"
 #include "core/mp_test.h"
 #include "core/gesture.h"
+#include <linux/wakelock.h>
 
 #define DTS_INT_GPIO	"touch,irq-gpio"
 #define DTS_RESET_GPIO	"touch,reset-gpio"
 
-#if (TP_PLATFORM == PT_MTK)
-#define DTS_OF_NAME		"mediatek,cap_touch"
-#include "tpd.h"
-extern struct tpd_device *tpd;
-#define MTK_RST_GPIO GTP_RST_PORT
-#define MTK_INT_GPIO GTP_INT_PORT
-#else
 #define DTS_OF_NAME		"tchip,ilitek"
-#endif /* PT_MTK */
+
 
 #define DEVICE_ID	"ILITEK_TDDI"
 
@@ -52,12 +46,17 @@ extern struct tpd_device *tpd;
 static DECLARE_WAIT_QUEUE_HEAD(waiter);
 #endif
 
+/*Huaqin add for fw update fail by liufurong at 20181112 start*/
+#ifdef BOOT_FW_UPGRADE
+extern int tp_fw_update_flag;
+struct wake_lock ili_tp_update_wakelock;
+#endif
+/*Huaqin add for fw update fail by liufurong at 20181112 end*/
+
 /* Debug level */
-uint32_t ipio_debug_level = DEBUG_ALL;
+uint32_t ipio_debug_level = 0;//DEBUG_ALL;
 EXPORT_SYMBOL(ipio_debug_level);
-
 struct ilitek_platform_data *ipd = NULL;
-
 void ilitek_platform_disable_irq(void)
 {
 	unsigned long nIrqFlag;
@@ -106,35 +105,15 @@ int ilitek_platform_tp_hw_reset(bool isEnable)
 	ilitek_platform_disable_irq();
 
 	if (isEnable) {
-#if (TP_PLATFORM == PT_MTK)
-		tpd_gpio_output(ipd->reset_gpio, 1);
-		mdelay(ipd->delay_time_high);
-		tpd_gpio_output(ipd->reset_gpio, 0);
-		mdelay(ipd->delay_time_low);
-		tpd_gpio_output(ipd->reset_gpio, 1);
-		mdelay(ipd->edge_delay);
-#else
 		gpio_direction_output(ipd->reset_gpio, 1);
 		mdelay(ipd->delay_time_high);
 		gpio_set_value(ipd->reset_gpio, 0);
 		mdelay(ipd->delay_time_low);
 		gpio_set_value(ipd->reset_gpio, 1);
 		mdelay(ipd->edge_delay);
-#endif /* PT_MTK */
 	} else {
-#if (TP_PLATFORM == PT_MTK)
-		tpd_gpio_output(ipd->reset_gpio, 0);
-#else
 		gpio_set_value(ipd->reset_gpio, 0);
-#endif /* PT_MTK */
 	}
-
-#ifdef HOST_DOWNLOAD
-	core_config_ice_mode_enable();
-	ret = core_firmware_upgrade(UPDATE_FW_PATH, true);
-	if(ret < 0)
-		ipio_err("host download failed!\n");
-#endif
 	mdelay(10);
 	ilitek_platform_enable_irq();
 	return ret;
@@ -205,31 +184,26 @@ static void read_power_status(uint8_t *buf)
 static void ilitek_platform_vpower_notify(struct work_struct *pWork)
 {
 	uint8_t charge_status[20] = { 0 };
-	static int charge_mode = 0;
 
 	ipio_debug(DEBUG_BATTERY, "isEnableCheckPower = %d\n", ipd->isEnablePollCheckPower);
 	read_power_status(charge_status);
 	ipio_debug(DEBUG_BATTERY, "Batter Status: %s\n", charge_status);
 
+/* Huaqin modify for ZQL1830-1463 by liufurong at 10181030 start */
 	if (strstr(charge_status, "Charging") != NULL || strstr(charge_status, "Full") != NULL
 	    || strstr(charge_status, "Fully charged") != NULL) {
-		if (charge_mode != 1) {
 			ipio_debug(DEBUG_BATTERY, "Charging mode\n");
 			core_config_plug_ctrl(false);
-			charge_mode = 1;
-		}
 	} else {
-		if (charge_mode != 2) {
 			ipio_debug(DEBUG_BATTERY, "Not charging mode\n");
 			core_config_plug_ctrl(true);
-			charge_mode = 2;
-		}
 	}
+/* Huaqin modify for ZQL1830-1463 by liufurong at 10181030 end */
 
 	if (ipd->isEnablePollCheckPower)
 		queue_delayed_work(ipd->check_power_status_queue, &ipd->check_power_status_work, ipd->work_delay);
 }
-#endif /* BATTERY_CHECK */
+#endif
 
 #ifdef ESD_CHECK
 static void ilitek_platform_esd_recovery(struct work_struct *work)
@@ -248,43 +222,17 @@ static void ilitek_platform_esd_check(struct work_struct *pWork)
 	int ret;
 	uint8_t tx_data = 0x82, rx_data = 0;
 
-#if (INTERFACE == SPI_INTERFACE)
-	ipio_debug(DEBUG_BATTERY, "isEnablePollCheckEsd = %d\n", ipd->isEnablePollCheckEsd);
-	if (spi_write_then_read(core_spi->spi, &tx_data, 1, &rx_data, 1) < 0) {
-		ipio_err("spi Write Error\n");
-	}
 
-	if(rx_data == 0x82) {
-		ipio_info("Doing ESD recovery (0x%x)\n", rx_data);
-		schedule_work(&ipd->esd_recovery);
-	} else {
-		if (ipd->isEnablePollCheckEsd)
-			queue_delayed_work(ipd->check_esd_status_queue,
-				&ipd->check_esd_status_work, ipd->esd_check_time);
-	}
-#endif /* SPI_INTERFACE */
 }
 #endif /* ESD_CHECK */
-
-#if (TP_PLATFORM == PT_MTK)
-static void tpd_resume(struct device *h)
+#if defined CONFIG_FB
+/* Huaqin modify Bright screen speed of 1244451 for ZQL1830 by liufurong at 2018/10/09 start*/
+int fb_ilitek_resume(void *data)
 {
-	ipio_info("TP Resuem\n");
-
-	if (!core_firmware->isUpgrading) {
-		core_config_ic_resume();
-	}
+	core_config_ic_resume();
+	return 0;
 }
-
-static void tpd_suspend(struct device *h)
-{
-	ipio_info("TP Suspend\n");
-
-	if (!core_firmware->isUpgrading) {
-		core_config_ic_suspend();
-	}
-}
-#elif defined CONFIG_FB
+/* Huaqin modify Bright screen speed of 1244451 for ZQL1830 by liufurong at 2018/10/09 end*/
 static int ilitek_platform_notifier_fb(struct notifier_block *self, unsigned long event, void *data)
 {
 	int *blank;
@@ -296,33 +244,37 @@ static int ilitek_platform_notifier_fb(struct notifier_block *self, unsigned lon
 	 *  FB_EVENT_BLANK(0x09): A hardware display blank change occurred.
 	 *  FB_EARLY_EVENT_BLANK(0x10): A hardware display blank early change occurred.
 	 */
-	if (evdata && evdata->data && (event == FB_EVENT_BLANK)) {
+	if (evdata && evdata->data && (event == FB_EARLY_EVENT_BLANK)) {
 		blank = evdata->data;
+		if (*blank == FB_BLANK_POWERDOWN){
+			ipio_info("TP early Suspend\n");
 
-#if (TP_PLATFORM == PT_SPRD)
-		if (*blank == DRM_MODE_DPMS_OFF)
-#else
-		if (*blank == FB_BLANK_POWERDOWN)
-#endif /* PT_SPRD */
-		{
+			if (!core_firmware->isUpgrading) {
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 start*/
+				core_config_ic_early_suspend();
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 end*/
+			}
+		}
+	}
+	else if (evdata && evdata->data && event == FB_EVENT_BLANK) {
+		blank = evdata->data;
+		if (*blank == FB_BLANK_UNBLANK) {
+			ipio_info("TP Resuem\n");
+
+			if (!core_firmware->isUpgrading) {
+			    /* Huaqin modify Bright screen speed of 1244451 for ZQL1830 by liufurong at 2018/10/09 start*/
+			    kthread_run(fb_ilitek_resume,&ipd->client->dev,"tp_ilitek_resume");
+			    /* Huaqin modify Bright screen speed of 1244451 for ZQL1830 by liufurong at 2018/10/09 end*/
+			}
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 start*/
+		} else if (*blank == FB_BLANK_POWERDOWN) {
 			ipio_info("TP Suspend\n");
 
 			if (!core_firmware->isUpgrading) {
 				core_config_ic_suspend();
 			}
 		}
-#if (TP_PLATFORM == PT_SPRD)
-		else if (*blank == DRM_MODE_DPMS_ON)
-#else
-		else if (*blank == FB_BLANK_UNBLANK || *blank == FB_BLANK_NORMAL)
-#endif /* PT_SPRD */
-		{
-			ipio_info("TP Resuem\n");
-
-			if (!core_firmware->isUpgrading) {
-				core_config_ic_resume();
-			}
-		}
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 end*/
 	}
 
 	return NOTIFY_OK;
@@ -350,7 +302,7 @@ static void ilitek_platform_late_resume(struct early_suspend *h)
 	core_fr->isEnableFR = true;
 	core_config_ic_resume();
 }
-#endif /* PT_MTK */
+#endif
 
 /**
  * reg_power_check - register a thread to inquery status at certain time.
@@ -423,24 +375,16 @@ static int ilitek_platform_reg_suspend(void)
 {
 	int res = 0;
 
-#if (TP_PLATFORM == PT_MTK)
-	ipio_info("It does nothing if platform is MTK\n");
-#else
 	ipio_info("Register suspend/resume callback function\n");
 #ifdef CONFIG_FB
 	ipd->notifier_fb.notifier_call = ilitek_platform_notifier_fb;
-#if (TP_PLATFORM == PT_SPRD)
-	res = adf_register_client(&ipd->notifier_fb);
-#else
 	res = fb_register_client(&ipd->notifier_fb);
-#endif /* PT_SPRD */
 #else
 	ipd->early_suspend->suspend = ilitek_platform_early_suspend;
 	ipd->early_suspend->esume = ilitek_platform_late_resume;
 	ipd->early_suspend->level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
 	res = register_early_suspend(ipd->early_suspend);
 #endif /* CONFIG_FB */
-#endif /* PT_MTK */
 
 	return res;
 }
@@ -478,19 +422,6 @@ static int ilitek_platform_input_init(void)
 {
 	int res = 0;
 
-#if (TP_PLATFORM == PT_MTK)
-	int i;
-
-	ipd->input_device = tpd->dev;
-
-	if (tpd_dts_data.use_tpd_button) {
-		for (i = 0; i < tpd_dts_data.tpd_key_num; i++) {
-			input_set_capability(ipd->input_device, EV_KEY, tpd_dts_data.tpd_key_local[i]);
-		}
-	}
-	core_fr_input_set_param(ipd->input_device);
-	return res;
-#else
 	ipd->input_device = input_allocate_device();
 
 	if (ERR_ALLOC_MEM(ipd->input_device)) {
@@ -499,17 +430,10 @@ static int ilitek_platform_input_init(void)
 		goto fail_alloc;
 	}
 
-#if (INTERFACE == I2C_INTERFACE)
 	ipd->input_device->name = ipd->client->name;
 	ipd->input_device->phys = "I2C";
 	ipd->input_device->dev.parent = &ipd->client->dev;
 	ipd->input_device->id.bustype = BUS_I2C;
-#else
-	ipd->input_device->name = DEVICE_ID;
-	ipd->input_device->phys = "SPI";
-	ipd->input_device->dev.parent = &ipd->spi->dev;
-	ipd->input_device->id.bustype = BUS_SPI;
-#endif
 
 	core_fr_input_set_param(ipd->input_device);
 	/* register the input device to input sub-system */
@@ -529,9 +453,9 @@ out:
 	input_unregister_device(ipd->input_device);
 	input_free_device(core_fr->input_device);
 	return res;
-#endif /* PT_MTK */
 }
 
+#if defined (USE_KTHREAD) || defined (BOOT_FW_UPGRADE)
 static int kthread_handler(void *arg)
 {
 	int res = 0;
@@ -543,22 +467,24 @@ static int kthread_handler(void *arg)
 
 		ilitek_platform_disable_irq();
 
-#ifdef HOST_DOWNLOAD
-		res = core_firmware_boot_host_download();
-#else
 #ifdef BOOT_FW_UPGRADE
+/*Huaqin add for fw update fail by liufurong at 20181112 start*/
+		wake_lock(&ili_tp_update_wakelock);
+		tp_fw_update_flag = 1;
 		res = core_firmware_boot_upgrade();
-#endif /* BOOT_FW_UPGRADE */
-#endif /* HOST_DOWNLOAD */
 		if (res < 0)
 			ipio_err("Failed to upgrade FW at boot stage\n");
-
+		tp_fw_update_flag = 0;
+		wake_unlock(&ili_tp_update_wakelock);
+/*Huaqin add for fw update fail by liufurong at 20181112 end*/
+#endif
+/* Huaqin modify for ZQL1830-600 by liufurong at 20180828 start */
+		//ilitek_platform_input_init();
 		ilitek_platform_enable_irq();
-
-		ilitek_platform_input_init();
-
+/* Huaqin modify for ZQL1830-600 by liufurong at 20180828 end */
 		core_firmware->isboot = false;
 	} else if (strcmp(str, "irq") == 0) {
+#ifdef USE_KTHREAD
 		/* IRQ event */
 		struct sched_param param = {.sched_priority = 4 };
 
@@ -572,19 +498,18 @@ static int kthread_handler(void *arg)
 			core_fr_handler();
 			ilitek_platform_enable_irq();
 		}
+#endif
 	} else {
 		ipio_err("Unknown EVENT\n");
 	}
 
 	return res;
 }
+#endif
 
 static int ilitek_platform_isr_register(void)
 {
 	int res = 0;
-#if (TP_PLATFORM == PT_MTK)
-	struct device_node *node;
-#endif /* PT_MTK */
 
 #ifdef USE_KTHREAD
 	ipd->irq_thread = kthread_run(kthread_handler, "irq", "ili_irq_thread");
@@ -600,14 +525,7 @@ static int ilitek_platform_isr_register(void)
 	INIT_WORK(&ipd->report_work_queue, ilitek_platform_work_queue);
 #endif /* USE_KTHREAD */
 
-#if (TP_PLATFORM == PT_MTK)
-	node = of_find_matching_node(NULL, touch_of_match);
-	if (node) {
-		ipd->isr_gpio = irq_of_parse_and_map(node, 0);
-	}
-#else
 	ipd->isr_gpio = gpio_to_irq(ipd->int_gpio);
-#endif /* PT_MTK */
 
 	ipio_info("ipd->isr_gpio = %d\n", ipd->isr_gpio);
 
@@ -619,8 +537,10 @@ static int ilitek_platform_isr_register(void)
 		ipio_err("Failed to register irq handler, irq = %d, res = %d\n", ipd->isr_gpio, res);
 		goto out;
 	}
-
-	ipd->isEnableIRQ = true;
+/* Huaqin modify for ZQL1830-600 by liufurong at 20180828 start */
+       ipd->isEnableIRQ = true;
+       ilitek_platform_disable_irq();
+/* Huaqin modify for ZQL1830-600 by liufurong at 20180828 end */
 
 out:
 	return res;
@@ -629,22 +549,14 @@ out:
 static int ilitek_platform_gpio(void)
 {
 	int res = 0;
-#if (TP_PLATFORM == PT_MTK)
-	ipd->int_gpio = MTK_INT_GPIO;
-	ipd->reset_gpio = MTK_RST_GPIO;
-#else
+
 #ifdef CONFIG_OF
-#if(INTERFACE == I2C_INTERFACE)
 	struct device_node *dev_node = ipd->client->dev.of_node;
-#else
-	struct device_node *dev_node = ipd->spi->dev.of_node;
-#endif
 	uint32_t flag;
 
 	ipd->int_gpio = of_get_named_gpio_flags(dev_node, DTS_INT_GPIO, 0, &flag);
 	ipd->reset_gpio = of_get_named_gpio_flags(dev_node, DTS_RESET_GPIO, 0, &flag);
 #endif /* CONFIG_OF */
-#endif /* PT_MTK */
 
 	ipio_info("GPIO INT: %d\n", ipd->int_gpio);
 	ipio_info("GPIO RESET: %d\n", ipd->reset_gpio);
@@ -687,31 +599,49 @@ out:
 	return res;
 }
 
-void ilitek_platform_read_tp_info(void)
+int ilitek_platform_read_tp_info(void)
 {
-	if (core_config_get_chip_id() < 0) {
-		ipio_err("Failed to get chip id\n");
+/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 start */
+	int retry_cnt = 0;
+	while(retry_cnt < 4){
+		if (core_config_get_chip_id() < 0) {
+			ipio_err("Failed to get chip id retry_cnt = %d \n",retry_cnt);
+			retry_cnt++;
+			if(retry_cnt == 3){
+				return -1;
+			}
+		} else {
+			break;
+		}
 	}
-
+/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 end */
+/* huaqin modify for probe fail by liufurong at 20180731 start */
 	if (core_config_get_protocol_ver() < 0) {
 		ipio_err("Failed to get protocol version\n");
+		//return -1;
 	}
-
+	udelay(50);
 	if (core_config_get_fw_ver() < 0) {
 		ipio_err("Failed to get firmware version\n");
+		//return -1;
 	}
-
+	udelay(50);
 	if (core_config_get_core_ver() < 0) {
 		ipio_err("Failed to get core version\n");
+		//return -1;
 	}
-
+	udelay(50);
 	if (core_config_get_tp_info() < 0) {
 		ipio_err("Failed to get TP information\n");
+		//return -1;
 	}
-
+	udelay(50);
 	if (core_config_get_key_info() < 0) {
 		ipio_err("Failed to get key information\n");
+		//return -1;
 	}
+/* huaqin modify for probe fail by liufurong at 20180731 end */
+	return 0;
 }
 EXPORT_SYMBOL(ilitek_platform_read_tp_info);
 
@@ -730,23 +660,14 @@ static int ilitek_platform_core_init(void)
 		return -EINVAL;
 	}
 
-#if (INTERFACE == I2C_INTERFACE)
 	if (core_i2c_init(ipd->client) < 0) {
-#else
-	if (core_spi_init(ipd->spi) < 0) {
-#endif
-
 		ipio_err("Failed to initialise interface\n");
 		return -EINVAL;
 	}
 	return 0;
 }
 
-#if (INTERFACE == I2C_INTERFACE)
 static int ilitek_platform_remove(struct i2c_client *client)
-#else
-static int ilitek_platform_remove(struct spi_device *spi)
-#endif
 {
 	ipio_info("Remove platform components\n");
 
@@ -794,6 +715,124 @@ static int ilitek_platform_remove(struct spi_device *spi)
 	return 0;
 }
 
+/* huaqin add for ito tset by liufurong at 20180725 start */
+/**********add ito test mode function  *******************/
+#define HWINFO_NAME		"tp_wake_switch"
+extern int32_t ilitek_ito_selftest_open(void);
+int ilitek_TestResultLen=0;
+static struct platform_device hwinfo_device= {
+	.name = HWINFO_NAME,
+	.id = -1,
+};
+
+static ssize_t ito_test_show(struct device *dev,struct device_attribute *attr,char *buf)
+{
+	int count;
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 start */
+	if (ipd->isEnablePollCheckPower)
+		cancel_delayed_work(&ipd->check_power_status_work);
+	ilitek_ito_selftest_open();
+	count = sprintf(buf, "%d\n", ilitek_TestResultLen);
+	ilitek_TestResultLen = 0;
+	if (ipd->isEnablePollCheckPower)
+		queue_delayed_work(ipd->check_power_status_queue,&ipd->check_power_status_work, ipd->work_delay);
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 end */
+	return count;
+}
+
+static ssize_t ito_test_store(struct device *dev,struct device_attribute *attr,const char *buf, size_t count)
+{
+	return 0;
+}
+
+static DEVICE_ATTR(factory_check, 0644, ito_test_show, ito_test_store);
+
+static struct attribute *ito_test_attributes[] ={
+
+	&dev_attr_factory_check.attr,
+	NULL
+};
+static struct attribute_group ito_test_attribute_group = {
+	.attrs = ito_test_attributes
+};
+int ilitek_test_node_init(struct platform_device *tpinfo_device)
+{
+	int err=0;
+    err = sysfs_create_group(&tpinfo_device->dev.kobj, &ito_test_attribute_group);
+    if (0 != err)
+    {
+        printk( "[ILITEK-ito] %s() - ERROR: sysfs_create_group() failed.",  __func__);
+        sysfs_remove_group(&tpinfo_device->dev.kobj, &ito_test_attribute_group);
+        return -EIO;
+    }
+    else
+    {
+        printk("[ILITEK-ito] %s() - sysfs_create_group() succeeded.", __func__);
+    }
+    return err;
+}
+/*************************************************/
+/* huaqin add for ito tset by liufurong at 20180725 end */
+
+/* huaqin add for gesture by liufurong at 20180807 start */
+#define ILITEK_GESTURE_MODE "tpd_gesture"
+
+static long gesture_mode = 0;
+
+static ssize_t ilitek_gesture_mode_get_proc(struct file *file,
+                        char __user *buffer, size_t size, loff_t *ppos)
+{
+	char ptr[64] = {0};
+	unsigned int len = 0;
+	unsigned int ret = 0;
+
+	if (gesture_mode == 0) {
+		len = sprintf(ptr, "0\n");
+	} else {
+		len = sprintf(ptr, "1\n");
+	}
+	ret = simple_read_from_buffer(buffer, size, ppos, ptr, (size_t)len);
+	return ret;
+}
+
+static ssize_t ilitek_gesture_mode_set_proc(struct file *filp,
+                        const char __user *buffer, size_t count, loff_t *off)
+{
+	char msg[20] = {0};
+	int ret = 0;
+
+	ret = copy_from_user(msg, buffer, count);
+	ipio_err("msg = %s\n", msg);
+	if (ret) {
+		return -EFAULT;
+	}
+
+	ret = kstrtol(msg, 0, &gesture_mode);
+	if (!ret) {
+		if (gesture_mode == 0) {
+			gesture_mode = 0;
+			core_config->isEnableGesture = false;
+		} else {
+			gesture_mode = 1;
+			core_config->isEnableGesture = true;
+		}
+	}
+	else {
+		ipio_err("set gesture mode failed\n");
+	}
+	ipio_err("gesture_mode = %d \n", core_config->isEnableGesture);
+
+	return count;
+}
+
+static struct proc_dir_entry *ilitek_gesture_mode_proc = NULL;
+static const struct file_operations gesture_mode_proc_ops = {
+	.owner = THIS_MODULE,
+	.read = ilitek_gesture_mode_get_proc,
+	.write = ilitek_gesture_mode_set_proc,
+};
+/* huaqin add for gesture by liufurong at 20180807 end */
+
 /**
  * The probe func would be called after an i2c device was detected by kernel.
  *
@@ -801,22 +840,20 @@ static int ilitek_platform_remove(struct spi_device *spi)
  * The reason for why we allow it passing the process is because users/developers
  * might want to have access to ICE mode to upgrade a firwmare forcelly.
  */
-#if (INTERFACE == I2C_INTERFACE)
+ /* huaqin add for Shutdown time by zhanghao at 20180906 start */
+static void ilitek_platform_shutdown(struct i2c_client *client)
+{
+	printk("HQ add for ilitek tp shut down\n");
+	ilitek_lcm_power_source_ctrl(0);
+}
+/* huaqin add for Shutdown time by zhanghao at 20180906 end */
 static int ilitek_platform_probe(struct i2c_client *client, const struct i2c_device_id *id)
-#else
-static int ilitek_platform_probe(struct spi_device *spi)
-#endif
 {
 #ifdef REGULATOR_POWER_ON
-#if (TP_PLATFORM == PT_MTK)
-	const char *vdd_name = "vtouch";
-#else
 	const char *vdd_name = "vdd";
-#endif /* PT_MTK */
 	const char *vcc_i2c_name = "vcc_i2c";
 #endif /* REGULATOR_POWER_ON */
 
-#if (INTERFACE == I2C_INTERFACE)
 	if (client == NULL) {
 		ipio_err("i2c client is NULL\n");
 		return -ENODEV;
@@ -833,15 +870,7 @@ static int ilitek_platform_probe(struct spi_device *spi)
 		ipio_err("I2C not supported\n");
 		return -ENODEV;
 	}
-#else
-	if (spi == NULL) {
-		ipio_err("spi device is NULL\n");
-		return -ENODEV;
-	}
-#endif
 
-	/* initialise the struct of touch ic memebers. */
-#if (INTERFACE == I2C_INTERFACE)
 	ipd = devm_kzalloc(&client->dev, sizeof(*ipd), GFP_KERNEL);
 	if (ERR_ALLOC_MEM(ipd)) {
 		ipio_err("Failed to allocate ipd memory, %ld\n", PTR_ERR(ipd));
@@ -851,17 +880,6 @@ static int ilitek_platform_probe(struct spi_device *spi)
 	ipd->client = client;
 	ipd->i2c_id = id;
 	ipd->dev = &client->dev;
-#else
-	ipd = devm_kzalloc(&spi->dev, sizeof(*ipd), GFP_KERNEL);
-	if (ERR_ALLOC_MEM(ipd)) {
-		ipio_err("Failed to allocate ipd memory, %ld\n", PTR_ERR(ipd));
-		return -ENOMEM;
-	}
-
-	ipd->spi = spi;
-	ipd->dev = &spi->dev;
-#endif
-
 	ipd->chip_id = TP_TOUCH_IC;
 	ipd->isEnableIRQ = false;
 	ipd->isEnablePollCheckPower = false;
@@ -881,11 +899,9 @@ static int ilitek_platform_probe(struct spi_device *spi)
 	 if (ipd->chip_id == CHIP_TYPE_ILI9881) {
 		 ipd->delay_time_high = 10;
 		 ipd->delay_time_low = 5;
-#if (INTERFACE == I2C_INTERFACE)
+
 		 ipd->edge_delay = 100;
-#else
-		 ipd->edge_delay = 1;
-#endif
+
 	}
 
 	mutex_init(&ipd->plat_mutex);
@@ -899,12 +915,7 @@ static int ilitek_platform_probe(struct spi_device *spi)
 	ipd->debug_node_open = false;
 
 #ifdef REGULATOR_POWER_ON
-#if (TP_PLATFORM == PT_MTK)
-	ipd->vdd = regulator_get(tpd->tpd_dev, vdd_name);
-	tpd->reg = ipd->vdd;
-#else
 	ipd->vdd = regulator_get(&ipd->client->dev, vdd_name);
-#endif /* PT_MTK */
 	if (ERR_ALLOC_MEM(ipd->vdd)) {
 		ipio_err("regulator_get vdd fail\n");
 		ipd->vdd = NULL;
@@ -923,30 +934,40 @@ static int ilitek_platform_probe(struct spi_device *spi)
 	}
 	ilitek_regulator_power_on(true);
 #endif /* REGULATOR_POWER_ON */
+	atomic_set(&(ipd->lcm_lab_power), 0);
+	atomic_set(&(ipd->lcm_ibb_power), 0);
+	if (ilitek_lcm_bias_power_init()) {
+		pr_err("power resource init error!\n");
+		goto out_power_reinit;
+	}
+	ilitek_lcm_power_source_ctrl(1);
 
-	if (ilitek_platform_gpio() < 0)
+	if (ilitek_platform_gpio() < 0){
 		ipio_err("Failed to request gpios\n ");
+		goto out_request_gpio;
+		}
 
 	/* If kernel failes to allocate memory to the core components, driver will be unloaded. */
 	if (ilitek_platform_core_init() < 0) {
 		ipio_err("Failed to allocate cores' mem\n");
-		return -ENOMEM;
+		goto out_core_init_fail;
 	}
 
-#ifdef HOST_DOWNLOAD
-	core_firmware_boot_host_download();
-#else
 	ilitek_platform_tp_hw_reset(true);
-#endif
 
 	/* get our tp ic information */
-	ilitek_platform_read_tp_info();
+	if(ilitek_platform_read_tp_info() < 0){
+		ipio_err("Failed to get tp info\n");
+		goto out_read_tp_info_fail;
+	}
 
 	/* If it defines boot upgrade, input register will be done inside boot function. */
-#ifndef BOOT_FW_UPGRADE
+/* Huaqin modify for ZQL1830-1478 by liufurong at 20181023 start */
+//#ifndef BOOT_FW_UPGRADE
 	if (ilitek_platform_input_init() < 0)
 		ipio_err("Failed to init input device in kernel\n");
-#endif /* BOOT_FW_UPGRADE */
+//#endif /* BOOT_FW_UPGRADE */
+/* Huaqin modify for ZQL1830-1478 by liufurong at 20181023 end */
 
 	if (ilitek_platform_isr_register() < 0)
 		ipio_err("Failed to register ISR\n");
@@ -961,12 +982,21 @@ static int ilitek_platform_probe(struct spi_device *spi)
 		ipio_err("Failed to register esd check function\n");
 	/* Create nodes for users */
 	ilitek_proc_init();
-
-#if (TP_PLATFORM == PT_MTK)
-	tpd_load_status = 1;
-#endif /* PT_MTK */
-
+/* huaqin add for ito tset by liufurong at 20180725 start */
+	platform_device_register(&hwinfo_device);
+	ilitek_test_node_init(&hwinfo_device);
+/* huaqin add for ito tset by liufurong at 20180725 end */
+/* huaqin add for gesture by liufurong at 20180807 start */
+	ilitek_gesture_mode_proc = proc_create(ILITEK_GESTURE_MODE, 0666, NULL,
+				&gesture_mode_proc_ops);
+	if (!ilitek_gesture_mode_proc) {
+		ipio_err("create proc tpd_gesture failed\n");
+	}
+/* huaqin add for gesture by liufurong at 20180807 end */
 #ifdef BOOT_FW_UPGRADE
+	/*Huaqin add for fw update fail by liufurong at 20181112 start*/
+	wake_lock_init(&ili_tp_update_wakelock, WAKE_LOCK_SUSPEND, "ili_tp-update");
+	/*Huaqin add for fw update fail by liufurong at 20181112 end*/
 	ipd->update_thread = kthread_run(kthread_handler, "boot_fw", "ili_fw_boot");
 	if (ipd->update_thread == (struct task_struct *)ERR_PTR) {
 		ipd->update_thread = NULL;
@@ -975,6 +1005,22 @@ static int ilitek_platform_probe(struct spi_device *spi)
 #endif /* BOOT_FW_UPGRADE */
 
 	return 0;
+out_read_tp_info_fail:
+	gpio_free(ipd->reset_gpio);
+	gpio_free(ipd->int_gpio);
+out_core_init_fail:
+out_request_gpio:
+	ilitek_lcm_power_source_ctrl(0);
+	ilitek_lcm_bias_power_deinit();
+out_power_reinit:
+	mutex_destroy(&ipd->ilitek_debug_read_mutex);
+	mutex_destroy(&ipd->ilitek_debug_mutex);
+	mutex_destroy(&ipd->plat_mutex);
+	/* huaqin modify for ZQL1830-1223 by liufurong at 20180930 start */
+	devm_kfree(&client->dev , ipd);
+	i2c_set_clientdata(client, NULL);
+	return -ENODEV;
+	/* huaqin modify for ZQL1830-1223 by liufurong at 20180930 end */
 }
 
 static const struct i2c_device_id tp_device_id[] = {
@@ -994,16 +1040,8 @@ static struct of_device_id tp_match_table[] = {
 	{},
 };
 
-#if (TP_PLATFORM == PT_MTK)
-static int tpd_detect(struct i2c_client *client, struct i2c_board_info *info)
-{
-	ipio_info("TPD detect i2c device\n");
-	strcpy(info->type, TPD_DEVICE);
-	return 0;
-}
-#endif /* PT_MTK */
 
-#if (INTERFACE == I2C_INTERFACE)
+
 static struct i2c_driver tp_i2c_driver = {
 	.driver = {
 		   .name = DEVICE_ID,
@@ -1013,98 +1051,23 @@ static struct i2c_driver tp_i2c_driver = {
 	.probe = ilitek_platform_probe,
 	.remove = ilitek_platform_remove,
 	.id_table = tp_device_id,
-#if (TP_PLATFORM == PT_MTK)
-	.detect = tpd_detect,
-#endif /* PT_MTK */
+/* huaqin add for Shutdown time by zhanghao at 20180906 start */
+	.shutdown = ilitek_platform_shutdown,
+/* huaqin add for Shutdown time by zhanghao at 20180906 end */
 };
-#else
-static struct spi_driver tp_spi_driver = {
-	.driver = {
-		.name	= DEVICE_ID,
-		.owner = THIS_MODULE,
-		.of_match_table = tp_match_table,
-	},
-	.probe = ilitek_platform_probe,
-	.remove = ilitek_platform_remove,
-};
-#endif
-
-#if (TP_PLATFORM == PT_MTK)
-static int tpd_local_init(void)
-{
-	ipio_info("TPD init device driver\n");
-
-	if (i2c_add_driver(&tp_i2c_driver) != 0) {
-		ipio_err("Unable to add i2c driver\n");
-		return -1;
-	}
-	if (tpd_load_status == 0) {
-		ipio_err("Add error touch panel driver\n");
-
-		i2c_del_driver(&tp_i2c_driver);
-		return -1;
-	}
-
-	if (tpd_dts_data.use_tpd_button) {
-		tpd_button_setting(tpd_dts_data.tpd_key_num, tpd_dts_data.tpd_key_local,
-				   tpd_dts_data.tpd_key_dim_local);
-	}
-
-	tpd_type_cap = 1;
-
-	return 0;
-}
-
-static struct tpd_driver_t tpd_device_driver = {
-	.tpd_device_name = DEVICE_ID,
-	.tpd_local_init = tpd_local_init,
-	.suspend = tpd_suspend,
-	.resume = tpd_resume,
-};
-#endif /* PT_MTK */
 
 static int __init ilitek_platform_init(void)
 {
-	int res = 0;
-
-#if (TP_PLATFORM == PT_MTK)
-	ipio_info("TDDI TP driver add i2c interface for MTK\n");
-	tpd_get_dts_info();
-	res = tpd_driver_add(&tpd_device_driver);
-	if (res < 0) {
-		ipio_err("TPD add TP driver failed\n");
-		tpd_driver_remove(&tpd_device_driver);
-		return -ENODEV;
-	}
-#else
-#if (INTERFACE == I2C_INTERFACE)
-	ipio_info("TDDI TP driver add i2c interface\n");
-	return i2c_add_driver(&tp_i2c_driver);;
-#else
-	ipio_info("TDDI TP driver add spi interface\n");
-	res = spi_register_driver(&tp_spi_driver);
-	if (res < 0) {
-		ipio_err("Failed to add ilitek driver\n");
-		spi_unregister_driver(&tp_spi_driver);
-		return -ENODEV;
-	}
-#endif
-#endif /* PT_MTK */
+	printk("HQ add for ili tp init\n");
+	ipio_info("TP driver init\n");
+	return i2c_add_driver(&tp_i2c_driver);
 }
 
 static void __exit ilitek_platform_exit(void)
 {
 	ipio_info("I2C driver has been removed\n");
 
-#if (TP_PLATFORM == PT_MTK)
-	tpd_driver_remove(&tpd_device_driver);
-#else
-#if (INTERFACE == I2C_INTERFACE)
 	i2c_del_driver(&tp_i2c_driver);
-#else
-	spi_unregister_driver(&tp_spi_driver);
-#endif
-#endif /* PT_MTK */
 }
 
 module_init(ilitek_platform_init);

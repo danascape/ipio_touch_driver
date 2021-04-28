@@ -352,14 +352,7 @@ static int finger_report_ver_5_0(void)
 
 	if (res < 0) {
 		ipio_err("Failed to read finger report packet\n");
-#if (INTERFACE == SPI_INTERFACE)
-		if(res == CHECK_RECOVER) {
-			ipio_err("Doing host download recovery !\n");
-			res = ilitek_platform_tp_hw_reset(true);
-			if(res < 0)
-				ipio_info("host download failed!\n");
-		}
-#endif
+
 		goto out;
 	}
 
@@ -652,6 +645,17 @@ void core_fr_handler(void)
 {
 	int i = 0;
 	uint8_t *tdata = NULL;
+/* huaqin add for ZQL1830-1201 by liufurong at 20180927 start */
+       if (core_fr == NULL) {
+               ipio_err("core_fr is Invalid \n");
+               return;
+       }
+
+       if (core_fr->input_device == NULL) {
+               ipio_err("core_fr->input_device is Invalid \n");
+               return;
+       }
+/* huaqin add for ZQL1830-1201 by liufurong at 20180927 start */
 
 	if (!core_fr->isEnableFR) {
 		ipio_err("Figner report was disabled, do nothing\n");
@@ -807,13 +811,11 @@ void core_fr_input_set_param(struct input_dev *input_device)
 	ipio_info("input resolution : max_x = %d, max_y = %d, min_x = %d, min_y = %d\n", max_x, max_y, min_x, min_y);
 	ipio_info("input touch number: max_tp = %d\n", max_tp);
 
-#if (TP_PLATFORM != PT_MTK)
 	input_set_abs_params(core_fr->input_device, ABS_MT_POSITION_X, min_x, max_x - 1, 0, 0);
 	input_set_abs_params(core_fr->input_device, ABS_MT_POSITION_Y, min_y, max_y - 1, 0, 0);
 
 	input_set_abs_params(core_fr->input_device, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 	input_set_abs_params(core_fr->input_device, ABS_MT_WIDTH_MAJOR, 0, 255, 0, 0);
-#endif /* PT_MTK */
 
 	if (core_fr->isEnablePressure)
 		input_set_abs_params(core_fr->input_device, ABS_MT_PRESSURE, 0, 255, 0, 0);

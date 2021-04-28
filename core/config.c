@@ -38,8 +38,103 @@ uint32_t ipio_chip_list[] = {
 };
 
 uint8_t g_read_buf[128] = { 0 };
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+int ilitek_tp_awake_flag = 0;
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 
 struct core_config_data *core_config = NULL;
+
+int ilitek_lcm_bias_power_init(void)
+{
+	int ret;
+	ipd->lcm_lab = regulator_get(&ipd->client->dev, "lcm_lab");
+	if (IS_ERR(ipd->lcm_lab)){
+		ret = PTR_ERR(ipd->lcm_lab);
+		pr_err("Regulator get failed lcm_lab ret=%d", ret);
+		goto _end;
+	}
+
+	ipd->lcm_ibb = regulator_get(&ipd->client->dev, "lcm_ibb");
+	if (IS_ERR(ipd->lcm_ibb)){
+		ret = PTR_ERR(ipd->lcm_ibb);
+		pr_err("Regulator get failed lcm_ibb ret=%d", ret);
+		goto reg_lcm_lab_put;
+	}
+	return 0;
+reg_lcm_lab_put:
+	regulator_put(ipd->lcm_lab);
+	ipd->lcm_lab = NULL;
+_end:
+	return ret;
+}
+
+int ilitek_lcm_bias_power_deinit(void)
+{
+	if (ipd-> lcm_ibb != NULL){
+		regulator_put(ipd->lcm_ibb);
+	}
+	if (ipd-> lcm_lab != NULL){
+		regulator_put(ipd->lcm_lab);
+	}
+	return 0;
+}
+
+
+int ilitek_lcm_power_source_ctrl(int enable)
+{
+	int rc;
+
+	if (ipd->lcm_lab!= NULL && ipd->lcm_ibb!= NULL){
+		if (enable){
+			if (atomic_inc_return(&(ipd->lcm_lab_power)) == 1) {
+				rc = regulator_enable(ipd->lcm_lab);
+				if (rc) {
+					atomic_dec(&(ipd->lcm_lab_power));
+					pr_err("Regulator lcm_lab enable failed rc=%d", rc);
+				}
+			}
+			else {
+				atomic_dec(&(ipd->lcm_lab_power));
+			}
+			if (atomic_inc_return(&(ipd->lcm_ibb_power)) == 1) {
+				rc = regulator_enable(ipd->lcm_ibb);
+				if (rc) {
+					atomic_dec(&(ipd->lcm_ibb_power));
+					pr_err("Regulator lcm_ibb enable failed rc=%d", rc);
+				}
+			}
+			else {
+				atomic_dec(&(ipd->lcm_ibb_power));
+			}
+		}
+		else {
+			if (atomic_dec_return(&(ipd->lcm_lab_power)) == 0) {
+				rc = regulator_disable(ipd->lcm_lab);
+				if (rc)
+				{
+					atomic_inc(&(ipd->lcm_lab_power));
+					pr_err("Regulator lcm_lab disable failed rc=%d", rc);
+				}
+			}
+			else{
+				atomic_inc(&(ipd->lcm_lab_power));
+			}
+			if (atomic_dec_return(&(ipd->lcm_ibb_power)) == 0) {
+				rc = regulator_disable(ipd->lcm_ibb);
+				if (rc)	{
+					atomic_inc(&(ipd->lcm_ibb_power));
+					pr_err("Regulator lcm_ibb disable failed rc=%d", rc);
+				}
+			}
+			else{
+				atomic_inc(&(ipd->lcm_ibb_power));
+			}
+		}
+	}
+	else
+		pr_err("Regulator lcm_ibb or lcm_lab is invalid");
+	return 0;
+}
 
 static void read_flash_info(uint8_t cmd, int len)
 {
@@ -194,9 +289,6 @@ EXPORT_SYMBOL(core_config_ice_mode_write);
  */
 void core_config_ic_reset(void)
 {
-#ifdef HOST_DOWNLOAD
-	core_config_ice_mode_disable();
-#else
 	uint32_t key = 0;
 
 	if (core_config->chip_id == CHIP_TYPE_ILI9881) {
@@ -211,7 +303,6 @@ void core_config_ic_reset(void)
 	}
 
 	msleep(300);
-#endif
 }
 EXPORT_SYMBOL(core_config_ic_reset);
 
@@ -325,7 +416,7 @@ EXPORT_SYMBOL(core_config_proximity_ctrl);
 
 void core_config_plug_ctrl(bool out)
 {
-	ipio_info("Plug Out = %d\n", out);
+	ipio_debug(DEBUG_CONFIG,"Plug Out = %d\n", out);
 
 	return core_protocol_func_control(12, out);
 }
@@ -356,17 +447,17 @@ void core_config_set_phone_cover(uint8_t *pattern)
 	core_protocol_func_control(9, 0);
 }
 EXPORT_SYMBOL(core_config_set_phone_cover);
-
-/*
- * ic_suspend: Get IC to suspend called from system.
- *
- * The timing when goes to sense stop or houw much times the command need to be called
- * is depending on customer's system requirement, which might be different due to
- * the DDI design or other conditions.
- */
-void core_config_ic_suspend(void)
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 start*/
+void core_config_ic_early_suspend(void)
 {
-	ipio_info("Starting to suspend ...\n");
+	ipio_info("Starting to early suspend ...\n");
+
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	if(ilitek_tp_awake_flag == 1) {
+		ipio_info("ilitek tp is already suspend...\n");
+		return;
+	}
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 
 	ilitek_platform_disable_irq();
 
@@ -379,27 +470,68 @@ void core_config_ic_suspend(void)
 	core_config_sense_ctrl(false);
 
 	/* check system busy */
-	if (core_config_check_cdc_busy(50, 50) < 0)
+	if (core_config_check_cdc_busy(50, 10) < 0)
 		ipio_err("Check busy is timout !\n");
+
+	ipio_info("Suspend early done\n");
+}
+EXPORT_SYMBOL(core_config_ic_early_suspend);
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 end*/
+/*
+ * ic_suspend: Get IC to suspend called from system.
+ *
+ * The timing when goes to sense stop or houw much times the command need to be called
+ * is depending on customer's system requirement, which might be different due to
+ * the DDI design or other conditions.
+ */
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 start*/
+void core_config_ic_suspend(void)
+{
+	ipio_info("Starting to suspend ...\n");
+
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	if(ilitek_tp_awake_flag == 1) {
+		ipio_info("ilitek tp is already suspend...\n");
+		return;
+	}
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 
 	ipio_info("Enabled Gesture = %d\n", core_config->isEnableGesture);
 
 	if (core_config->isEnableGesture) {
-		core_fr->actual_fw_mode = P5_0_FIRMWARE_GESTURE_MODE;
-#ifdef HOST_DOWNLOAD
-		if(core_gesture_load_code() < 0)
-			ipio_err("load gesture code fail\n");
-#endif
+		/* huaqin modify for ZQL1830-81 by liufurong at 20180813 start */
+		//core_fr->actual_fw_mode = P5_0_FIRMWARE_GESTURE_MODE;
 		ilitek_platform_enable_irq();
+		core_config_lpwg_ctrl(true);
+		/* huaqin modify for ZQL1830-81 by liufurong at 20180813 end */
 	} else {
 		/* sleep in */
 		core_config_sleep_ctrl(false);
 	}
+	if (core_config->isEnableGesture){
+		pr_err("gesture suspend end not disable vsp/vsn\n");
+	}
+	else{
+/* huaqin modify for ZQL1830-ILI to Solve standby power by zhanghao at 20180830 start */
+		mdelay(200);
+/* huaqin modify for ZQL1830-ILI to Solve standby power by zhanghao at 20180830 end */
+		ilitek_lcm_power_source_ctrl(0);//disable vsp/vsn
+		pr_err("sleep suspend end  disable vsp/vsn\n");
+	}
+	/* Huaqin add for gesture by liufurong at 20180918 start */
+	/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	if (core_config->isEnableGesture)
+		enable_irq_wake(ipd->isr_gpio);
+	/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
+	/* Huaqin add for gesture by liufurong at 20180918 end */
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	ilitek_tp_awake_flag = 1;
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 
 	ipio_info("Suspend done\n");
 }
 EXPORT_SYMBOL(core_config_ic_suspend);
-
+/* Huaqin modify for ili suspend by qimaokang at 2018/08/22 end*/
 /*
  * ic_resume: Get IC to resume called from system.
  *
@@ -410,50 +542,51 @@ EXPORT_SYMBOL(core_config_ic_suspend);
 void core_config_ic_resume(void)
 {
 	ipio_info("Starting to resume ...\n");
-
-	if (core_config->isEnableGesture) {
-#ifdef HOST_DOWNLOAD
-		ilitek_platform_disable_irq();
-		if(core_gesture_load_ap_code() < 0) {
-			ipio_err("load ap code fail\n");
-			ilitek_platform_tp_hw_reset(true);
-		}
-#endif
-	} else {
-#ifdef HOST_DOWNLOAD
-		ilitek_platform_tp_hw_reset(true);
-#endif
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	if(ilitek_tp_awake_flag == 0) {
+		ipio_info("ilitek tp is already resume...\n");
+		return;
 	}
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 
+	ilitek_lcm_power_source_ctrl(1);//enable vsp/vsn
+	/* Huaqin add for gesture by liufurong at 20180918 start */
+	/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	if (core_config->isEnableGesture)
+		disable_irq_wake(ipd->isr_gpio);
+	/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
+	/* Huaqin add for gesture by liufurong at 20180918 end */
 	/* sleep out */
 	core_config_sleep_ctrl(true);
 
 	/* check system busy */
-	if (core_config_check_cdc_busy(50, 50) < 0)
-		ipio_err("Check busy is timout !\n");
+//	if (core_config_check_cdc_busy(50, 10) < 0)
+//		ipio_err("Check busy is timout !\n");
 
 	/* sense start for TP */
 	core_config_sense_ctrl(true);
 
 	core_fr_mode_control(&protocol->demo_mode);
-
-#ifndef HOST_DOWNLOAD
 	/* Soft reset */
-	core_config_ice_mode_enable();
-	core_config_set_watch_dog(false);
-	mdelay(10);
-	core_config_ic_reset();
-#endif
+	//core_config_ice_mode_enable();
+	//core_config_set_watch_dog(false);
+	//mdelay(10);
+	//core_config_ic_reset();
+/* Huaqin modify for time sequence by qimaokang at 2018/08/14 start*/
+	//ilitek_platform_tp_hw_reset(true);
+/* Huaqin modify for time sequence by qimaokang at 2018/08/14 end*/
 
-out:
+
+//out:
 	if (ipd->isEnablePollCheckPower)
-		queue_delayed_work(ipd->check_power_status_queue,
-			&ipd->check_power_status_work, ipd->work_delay);
+		queue_delayed_work(ipd->check_power_status_queue,&ipd->check_power_status_work, ipd->work_delay);
 	if (ipd->isEnablePollCheckEsd)
-		queue_delayed_work(ipd->check_esd_status_queue,
-			&ipd->check_esd_status_work, ipd->esd_check_time);
+		queue_delayed_work(ipd->check_esd_status_queue,&ipd->check_esd_status_work, ipd->esd_check_time);
 
 	ilitek_platform_enable_irq();
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 start */
+	ilitek_tp_awake_flag = 0;
+/* Huaqin add for tp suspend/resume by liufurong at 20181115 end */
 	ipio_info("Resume done\n");
 }
 EXPORT_SYMBOL(core_config_ic_resume);
@@ -773,6 +906,19 @@ int core_config_get_tp_info(void)
 	ipio_info("side_touch_type = %d, max_touch_num= %d, touch_key_num = %d, max_key_num = %d\n",
 		 core_config->tp_info->side_touch_type, core_config->tp_info->nMaxTouchNum,
 		 core_config->tp_info->nKeyCount, core_config->tp_info->nMaxKeyButtonNum);
+/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 start */
+	core_config->tp_info->nMinX = 0;
+	core_config->tp_info->nMinY = 0;
+	core_config->tp_info->nMaxX = 2048;
+	core_config->tp_info->nMaxY = 2048;
+	core_config->tp_info->nXChannelNum = 18;
+	core_config->tp_info->nYChannelNum = 32;
+	core_config->tp_info->self_tx_channel_num = 18;
+	core_config->tp_info->self_rx_channel_num = 32;
+	core_config->tp_info->side_touch_type = 0;
+	core_config->tp_info->nMaxTouchNum = 10;
+	core_config->tp_info->nKeyCount = 0;
+/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 end */
 
 out:
 	return res;
@@ -820,6 +966,11 @@ int core_config_get_protocol_ver(void)
 
 	ipio_info("Procotol Version = %d.%d.%d\n",
 		 core_config->protocol_ver[0], core_config->protocol_ver[1], core_config->protocol_ver[2]);
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 start */
+	core_config->protocol_ver[0] = 5;
+	core_config->protocol_ver[1] = 4;
+	core_config->protocol_ver[2] = 0;
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 end */
 
 	major = core_config->protocol_ver[0];
 	mid = core_config->protocol_ver[1];
@@ -918,8 +1069,9 @@ int core_config_get_fw_ver(void)
 		goto out;
 	}
 
-	for (; i < protocol->fw_ver_len; i++)
+	for (; i < protocol->fw_ver_len; i++){
 		core_config->firmware_ver[i] = g_read_buf[i];
+	}
 
 	if (protocol->mid >= 0x3) {
 		ipio_info("Firmware Version = %d.%d.%d.%d\n", core_config->firmware_ver[1], core_config->firmware_ver[2], core_config->firmware_ver[3], core_config->firmware_ver[4]);
@@ -972,7 +1124,10 @@ int core_config_get_chip_id(void)
 	}
 
 out:
-	core_config_ic_reset();
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 start */
+	//core_config_ic_reset();
+	ilitek_platform_tp_hw_reset(true);
+	/* huaqin modify for ZQL1830-1529 by liufurong at 20181101 end */
 	mdelay(150);
 	return res;
 }

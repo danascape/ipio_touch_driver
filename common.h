@@ -142,15 +142,15 @@ enum {
 };
 
 #define ipio_info(fmt, arg...)	\
-	pr_info("ILITEK: (%s, %d): " fmt, __func__, __LINE__, ##arg);
+	pr_info("[ILITEK][info] (%s, %d): " fmt, __func__, __LINE__, ##arg);
 
 #define ipio_err(fmt, arg...)	\
-	pr_err("ILITEK: (%s, %d): " fmt, __func__, __LINE__, ##arg);
+	pr_err("[ILITEK][err] (%s, %d): " fmt, __func__, __LINE__, ##arg);
 
 #define ipio_debug(level, fmt, arg...)									\
 	do {																\
 		if (level & ipio_debug_level)									\
-		pr_info("ILITEK: (%s, %d): " fmt, __func__, __LINE__, ##arg);	\
+		pr_info("[ILITEK][debug] (%s, %d): " fmt, __func__, __LINE__, ##arg);	\
 	} while (0)
 
 /* Distributed to all core functions */
@@ -199,8 +199,8 @@ enum ili9881_types {
 /*
  * Other settings
  */
-#define CSV_PATH			"/sdcard"
-#define INI_NAME_PATH		"/sdcard/mp.ini"
+#define CSV_PATH			"/sdcard/tpdata"
+#define INI_NAME_PATH		"/vendor/firmware/mp.ini"
 #define UPDATE_FW_PATH		"/sdcard/ILITEK_FW"
 #define POWER_STATUS_PATH 	"/sys/class/power_supply/battery/status"
 #define CHECK_BATTERY_TIME  2000
@@ -233,7 +233,7 @@ enum ili9881_types {
 //#define REGULATOR_POWER_ON
 
 /* Either an interrupt event handled by kthread or work queue. */
-#define USE_KTHREAD
+//#define USE_KTHREAD
 
 /* Enable DMA with I2C. */
 //#define I2C_DMA
@@ -242,10 +242,12 @@ enum ili9881_types {
 //#define I2C_SEGMENT
 
 /* Be able to upgrade fw at boot stage */
-//#define BOOT_FW_UPGRADE
+#define BOOT_FW_UPGRADE
 
 /* Check battery's status in order to avoid some effects from charge. */
-//#define BATTERY_CHECK
+/* Huaqin modify for ZQL1830-1463 by liufurong at 10181030 start */
+#define BATTERY_CHECK
+/* Huaqin modify for ZQL1830-1463 by liufurong at 10181030 end */
 
 /* Check whether the IC is damaged by ESD */
 //#define ESD_CHECK

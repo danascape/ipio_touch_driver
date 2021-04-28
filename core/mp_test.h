@@ -158,6 +158,7 @@ struct core_mp_test_data {
 
 extern struct core_mp_test_data *core_mp;
 extern struct mp_test_items tItems[];
+extern int ilitek_TestResultLen;
 
 extern void dump_data(void *data, int type, int len, int row_len, const char *name);
 extern void core_mp_copy_reseult(int *buf, int size);

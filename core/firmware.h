@@ -51,15 +51,10 @@ struct core_firmware_data {
 
 extern struct core_firmware_data *core_firmware;
 
-#ifdef HOST_DOWNLOAD
-extern int core_firmware_boot_host_download(void);
-extern int tddi_host_download(bool isIRAM);
-#else
 #ifdef BOOT_FW_UPGRADE
 extern int core_firmware_boot_upgrade(void);
 #endif
 extern int tddi_fw_upgrade(bool isIRAM);
-#endif
 /* extern int core_firmware_iram_upgrade(const char* fpath); */
 extern int core_firmware_upgrade(const char *, bool isIRAM);
 extern int core_firmware_init(void);

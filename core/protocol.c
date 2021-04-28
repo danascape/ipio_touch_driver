@@ -48,21 +48,13 @@ struct protocol_cmd_list *protocol = NULL;
 
 int core_write(uint8_t nSlaveId, uint8_t *pBuf, uint16_t nSize)
 {
-#if (INTERFACE == I2C_INTERFACE)
 	return core_i2c_write(nSlaveId, pBuf, nSize);
-#else
-	return core_spi_write(pBuf, nSize);
-#endif
 }
 EXPORT_SYMBOL(core_write);
 
 int core_read(uint8_t nSlaveId, uint8_t *pBuf, uint16_t nSize)
 {
-#if (INTERFACE == I2C_INTERFACE)
 	return core_i2c_read(nSlaveId, pBuf, nSize);
-#else
-	return core_spi_read(pBuf, nSize);
-#endif
 }
 EXPORT_SYMBOL(core_read);
 
@@ -342,7 +334,7 @@ void core_protocol_func_control(int key, int ctrl)
 	struct DataItem *tmp = search_func(key);
 
 	if (tmp != NULL) {
-		ipio_info("Found func's name: %s, key = %d\n", tmp->name, key);
+		ipio_debug(DEBUG_CONFIG,"Found func's name: %s, key = %d\n", tmp->name, key);
 
 		/* last element is used to control this func */
 		if (tmp->key != 9)

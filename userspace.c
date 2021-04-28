@@ -302,7 +302,7 @@ static ssize_t ilitek_proc_debug_message_read(struct file *filp, char __user *bu
 /* Created only for oppo */
 static ssize_t ilitek_proc_oppo_mp_lcm_on_read(struct file *filp, char __user *buff, size_t size, loff_t *pPos)
 {
-	int len = 0, ret = 0;
+	int len = 0;
 
 	if (*pPos != 0)
 		return 0;
@@ -345,13 +345,6 @@ static ssize_t ilitek_proc_oppo_mp_lcm_on_read(struct file *filp, char __user *b
 	/* Switch to demo mode */
 	core_fr_mode_control(&protocol->demo_mode);
 
-#ifdef HOST_DOWNLOAD
-	ret = ilitek_platform_tp_hw_reset(true);
-	if(ret < 0) {
-		ipio_info("host download failed!\n");
-	}
-#endif
-
 	ilitek_platform_enable_irq();
 
 out:
@@ -392,10 +385,6 @@ static ssize_t ilitek_proc_oppo_mp_lcm_off_read(struct file *filp, char __user *
 
 	core_fr->actual_fw_mode = P5_0_FIRMWARE_GESTURE_MODE;
 
-#ifdef HOST_DOWNLOAD
-	core_gesture_load_code();
-#endif
-
 	/* Switch to test mode which moves mp code to iram */
 	core_fr_mode_control(&protocol->test_mode);
 
@@ -430,6 +419,106 @@ out:
 	*pPos = len;
 	return len;
 }
+
+//extern int ilitek_TestResultLen;
+int32_t ilitek_ito_selftest_open(void){
+	uint32_t res;
+
+	if (core_firmware->isUpgrading) {
+		ilitek_TestResultLen = 0;
+		ipio_err("FW upgrading, please wait to complete\n");
+		goto out;
+	}
+
+	if (core_parser_path(INI_NAME_PATH) < 0) {
+		ilitek_TestResultLen = 0;
+		ipio_err("Failed to parsing INI file\n");
+		goto out;
+	}
+
+	/* Init MP structure */
+	if(core_mp_init() < 0) {
+		ilitek_TestResultLen = 0;
+		ipio_err("Failed to init mp\n");
+		goto out;
+	}
+
+	/* Switch to Test mode nad move mp code */
+	res = core_fr_mode_control(&protocol->test_mode);
+	if (res < 0) {
+		ilitek_TestResultLen = 0;
+		ipio_err("Switch to test mode failed\n");
+		goto out;
+	}
+
+	mutex_lock(&ipd->plat_mutex);
+
+	ilitek_platform_disable_irq();
+	core_fr->isEnableFR = false;
+
+	/*
+	 * Get timing parameters first.
+	 * Howerver, this can be ignored if read them from ini.
+	 */
+	if (protocol->major >= 5 && protocol->mid >= 4) {
+		if (core_mp_calc_timing_nodp() < 0) {
+			ilitek_TestResultLen = 0;
+			ipio_err("Can't get timing parameters\n");
+			goto out;
+		}
+	}
+
+	/* Do not chang the sequence of test */
+	core_mp_run_test("Noise Peak To Peak(With Panel)", true);
+	core_mp_run_test("Noise Peak to Peak(IC Only)", true);
+	core_mp_run_test("Short Test -ILI9881", true);
+	core_mp_run_test("Open Test(integration)_SP", true);
+	core_mp_run_test("Raw Data(Have BK)", true);
+	//core_mp_run_test("Raw Data(Have BK) (LCM OFF)", true);
+	core_mp_run_test("Calibration Data(DAC)", true);
+	core_mp_run_test("Raw Data(No BK)", true);
+	core_mp_run_test("Raw Data(No BK) (LCM OFF)", true);
+	core_mp_run_test("Noise Peak to Peak(With Panel) (LCM OFF)", true);
+	//core_mp_run_test("Noise Peak to Peak(IC Only) (LCM OFF)", true);
+	core_mp_run_test("Raw Data_TD (LCM OFF)", true);
+	core_mp_run_test("Peak To Peak_TD (LCM OFF)", true);
+	core_mp_run_test("Doze Raw Data", true);
+	core_mp_run_test("Doze Peak To Peak", true);
+	//core_mp_run_test("Pin Test ( INT and RST )", true);
+
+	core_mp_show_result();
+
+	/* copy result to user */
+/*	memset(apk, 2, sizeof(apk));
+	core_mp_copy_reseult(apk, sizeof(apk));
+	res = copy_to_user((uint32_t *)buff, apk, sizeof(apk));
+	if (res < 0)
+		ipio_err("Failed to copy data to user space\n");
+*/
+	core_mp_test_free();
+
+	core_config_ice_mode_enable();
+
+	if (core_config_set_watch_dog(false) < 0) {
+		ipio_err("Failed to disable watch dog\n");
+	}
+
+	core_config_ic_reset();
+
+	/* Switch to Demo mode */
+	res = core_fr_mode_control(&protocol->demo_mode);
+	if (res < 0) {
+		ipio_err("Switch to dmoe mode failed\n");
+		goto out;
+	}
+
+out:
+	core_fr->isEnableFR = true;
+	ilitek_platform_enable_irq();
+	mutex_unlock(&ipd->plat_mutex);
+	return ilitek_TestResultLen;
+}
+
 
 static ssize_t ilitek_proc_mp_test_read(struct file *filp, char __user *buff, size_t size, loff_t *pPos)
 {
@@ -507,7 +596,6 @@ static ssize_t ilitek_proc_mp_test_read(struct file *filp, char __user *buff, si
 
 	core_mp_test_free();
 
-#ifndef HOST_DOWNLOAD
 	core_config_ice_mode_enable();
 
 	if (core_config_set_watch_dog(false) < 0) {
@@ -515,7 +603,6 @@ static ssize_t ilitek_proc_mp_test_read(struct file *filp, char __user *buff, si
 	}
 
 	core_config_ic_reset();
-#endif
 
 	/* Switch to Demo mode */
 	res = core_fr_mode_control(&protocol->demo_mode);
@@ -523,11 +610,6 @@ static ssize_t ilitek_proc_mp_test_read(struct file *filp, char __user *buff, si
 		ipio_err("Switch to dmoe mode failed\n");
 		goto out;
 	}
-
-#ifdef HOST_DOWNLOAD
-	if(ilitek_platform_tp_hw_reset(true) < 0)
-		ipio_info("host download failed!\n");
-#endif
 
 out:
 	core_fr->isEnableFR = true;
@@ -599,7 +681,6 @@ static ssize_t ilitek_proc_mp_test_write(struct file *filp, const char *buff, si
 
 	core_mp_test_free();
 
-#ifndef HOST_DOWNLOAD
 	core_config_ice_mode_enable();
 
 	if (core_config_set_watch_dog(false) < 0) {
@@ -607,14 +688,8 @@ static ssize_t ilitek_proc_mp_test_write(struct file *filp, const char *buff, si
 	}
 
 	core_config_ic_reset();
-#endif
 
 	core_fr_mode_control(&protocol->demo_mode);
-
-#ifdef HOST_DOWNLOAD
-	if(ilitek_platform_tp_hw_reset(true) < 0)
-		ipio_info("host download failed!\n");
-#endif
 
 	ilitek_platform_enable_irq();
 
@@ -909,13 +984,7 @@ static ssize_t ilitek_proc_fw_upgrade_read(struct file *filp, char __user *buff,
 
 	ilitek_platform_disable_irq();
 
-#ifdef HOST_DOWNLOAD
-	res = ilitek_platform_tp_hw_reset(true);
-	if(res < 0)
-		ipio_info("host download failed!\n");
-#else
 	res = core_firmware_upgrade(UPDATE_FW_PATH, false);
-#endif
 
 	ilitek_platform_enable_irq();
 
@@ -1126,9 +1195,6 @@ static ssize_t ilitek_proc_ioctl_write(struct file *filp, const char *buff, size
 		mdelay(10);
 	} else if (strcmp(cmd, "gt") == 0) {
 		ipio_info("test Gesture test\n");
-#ifdef HOST_DOWNLOAD
-		core_gesture_load_code();
-#endif
 	} else if (strcmp(cmd, "suspend") == 0) {
 		ipio_info("test suspend test\n");
 		core_config_ic_suspend();
@@ -1413,7 +1479,21 @@ static long ilitek_proc_ioctl(struct file *filp, unsigned int cmd, unsigned long
 
 	return res;
 }
-
+/* huaqin add for ZQL1830-127 by liufurong at 20180907 start */
+static ssize_t ilitek_proc_getinfo_read(struct file *filp, char __user *buff, size_t size, loff_t *pPos)
+{
+	char ptr[64] = {0};
+	int ret = 0;
+	core_config_get_fw_ver();
+	if (protocol->mid >= 0x3) {
+		snprintf(ptr, 64, "IC=ili9881H module=HLT fw_ver= %d.%d.%d.%d \n",core_config->firmware_ver[1],core_config->firmware_ver[2],core_config->firmware_ver[3],core_config->firmware_ver[4]);
+	} else {
+		snprintf(ptr, 64, "IC=ili9881H module=HLT fw_ver= %d.%d.%d \n",core_config->firmware_ver[1],core_config->firmware_ver[2],core_config->firmware_ver[3]);
+	}
+	ret = simple_read_from_buffer(buff, size, pPos, ptr, strlen(ptr));
+	return ret;
+}
+/* huaqin add for ZQL1830-127 by liufurong at 20180907 end */
 struct proc_dir_entry *proc_dir_ilitek;
 struct proc_dir_entry *proc_ioctl;
 struct proc_dir_entry *proc_fw_process;
@@ -1484,7 +1564,12 @@ struct file_operations proc_debug_message_fops = {
 struct file_operations proc_debug_message_switch_fops = {
 	.read = ilitek_proc_debug_switch_read,
 };
-
+/* huaqin add for ZQL1830-127 by liufurong at 20180731 start */
+struct file_operations proc_ilitek_info_fops = {
+	.owner = THIS_MODULE,
+	.read = ilitek_proc_getinfo_read,
+};
+/* huaqin add for ZQL1830-127 by liufurong at 20180731 end */
 /**
  * This struct lists all file nodes will be created under /proc filesystem.
  *
@@ -1515,6 +1600,9 @@ proc_node_t proc_table[] = {
 	{"oppo_mp_lcm_off", NULL, &proc_oppo_mp_lcm_off_fops, false},
 	{"debug_message", NULL, &proc_debug_message_fops, false},
 	{"debug_message_switch", NULL, &proc_debug_message_switch_fops, false},
+	/* huaqin add for ZQL1830-127 by liufurong at 20180731 start*/
+	{"ilitek_info", NULL, &proc_ilitek_info_fops, false},
+	/* huaqin add for ZQL1830-127 by liufurong at 20180731 start*/
 };
 
 #define NETLINK_USER 21

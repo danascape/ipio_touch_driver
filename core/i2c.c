@@ -219,16 +219,16 @@ int core_i2c_init(struct i2c_client *client)
 		return -ENOMEM;
 	}
 #endif /* I2C_DMA */
-
+/* Huaqin modify for TP update fail by liufurong at 20181017 start */
 	for (i = 0; i < ARRAY_SIZE(ipio_chip_list); i++) {
 		if (ipio_chip_list[i] == TP_TOUCH_IC) {
 			 if (ipio_chip_list[i] == CHIP_TYPE_ILI9881)
-				core_i2c->clk = 400000;
+				core_i2c->clk = 200000;//400000
 
 			return 0;
 		}
 	}
-
+/* Huaqin modify for TP update fail by liufurong at 20181017 end */
 	ipio_err("Can't find this chip in support list\n");
 	return 0;
 }

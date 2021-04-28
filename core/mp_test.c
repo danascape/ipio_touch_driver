@@ -1979,17 +1979,6 @@ static void mp_do_retry(int index, int count)
 		return;
 	}
 
-#ifdef HOST_DOWNLOAD
-	/* Makre sure that fw mode is in test mode and reload MP code */
-	core_fr->actual_fw_mode = protocol->test_mode;
-
-	if(ilitek_platform_tp_hw_reset(true) < 0)
-		ipio_info("host download failed!\n");
-
-	/* Check ready to switch test mode */
-	if (core_config_check_cdc_busy(50, 50) < 0)
-		ipio_err("Check busy is timout\n");
-#else
 	core_config_ice_mode_enable();
 
 	if (core_config_set_watch_dog(false) < 0) {
@@ -2007,7 +1996,6 @@ static void mp_do_retry(int index, int count)
 	core_fr_mode_control(&protocol->test_mode);
 
 	ipio_info("retry = %d, item = %s\n", count, tItems[index].desp);
-#endif
 
 	ilitek_platform_disable_irq();
 
@@ -2193,9 +2181,11 @@ void core_mp_show_result(void)
 
 	if (pass_item_count == 0) {
 		core_mp->final_result = MP_FAIL;
+		ilitek_TestResultLen = 0;
 		sprintf(csv_name, "%s/%s.csv", CSV_PATH, ret_fail_name);
 	} else {
 		core_mp->final_result = MP_PASS;
+		ilitek_TestResultLen = 1;
 		sprintf(csv_name, "%s/%s.csv", CSV_PATH, ret_pass_name);
 	}
 
@@ -2206,6 +2196,7 @@ void core_mp_show_result(void)
 
 	if (ERR_ALLOC_MEM(f)) {
 		ipio_err("Failed to open CSV file");
+		ilitek_TestResultLen = 0;
 		goto fail_open;
 	}
 
@@ -2213,6 +2204,7 @@ void core_mp_show_result(void)
 
 	if (csv_len >= CSV_FILE_SIZE) {
 		ipio_err("The length saved to CSV is too long !\n");
+		ilitek_TestResultLen = 0;
 		goto fail_open;
 	}
 
@@ -2365,12 +2357,6 @@ EXPORT_SYMBOL(core_mp_run_test);
 int core_mp_move_code(void)
 {
 	ipio_info("Prepaing to enter Test Mode\n");
-#ifdef HOST_DOWNLOAD
-	if(ilitek_platform_tp_hw_reset(true) < 0) {
-		ipio_info("host download failed!\n");
-		return -1;
-	}
-#else
 	if (core_config_ice_mode_enable() < 0) {
 		ipio_err("Failed to enter ICE mode\n");
 		return -1;
@@ -2404,7 +2390,6 @@ int core_mp_move_code(void)
 		ipio_err("Check busy is timout ! Enter Test Mode failed\n");
 		return -1;
 	}
-#endif
 	ipio_info("FW Test Mode ready\n");
 	return 0;
 }
